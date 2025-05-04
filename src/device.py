@@ -1,7 +1,6 @@
 import socket
 import threading
 import time
-import json
 import uuid
 import os
 import base64
@@ -9,6 +8,8 @@ import hashlib
 from typing import Dict, List, Optional
 from dataclasses import dataclass
 from datetime import datetime
+
+CHUNK_SIZE = 512
 
 @dataclass
 class DeviceInfo:
@@ -22,27 +23,22 @@ class Device:
         self.name = name
         self.port = port
         
-        # Socket para receber mensagens
         self.socket = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.socket.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
         self.socket.bind(('', port))
         
-        # Lista de dispositivos conhecidos
         self.known_devices: Dict[str, DeviceInfo] = {}
         
-        # Dicionário para rastrear mensagens pendentes de ACK
         self.pending_acks: Dict[str, tuple] = {}
         
-        # Threads
         self.receive_thread = threading.Thread(target=self._receive_loop)
         self.heartbeat_thread = threading.Thread(target=self._heartbeat_loop)
         self.ack_thread = threading.Thread(target=self._ack_loop)
         
-        # Flags de controle
         self.running = True
         
-        self.file_send_state = None  # (msg_id, filename, filesize, target, next_seq, pending_chunks)
-        self.file_recv_state = {}    # msg_id: {filename, filesize, received_chunks, total_chunks, data_chunks}
+        self.file_send_state = None 
+        self.file_recv_state = {}  
         
     def start(self):
         """Inicia o dispositivo e suas threads"""
@@ -50,7 +46,7 @@ class Device:
         self.heartbeat_thread.start()
         self.ack_thread.start()
         print(f"Dispositivo {self.name} iniciado na porta {self.port}")
-        self._send_heartbeat()  # Envia HEARTBEAT inicial
+        self._send_heartbeat()  
         
     def stop(self):
         """Para o dispositivo e suas threads"""
@@ -83,12 +79,12 @@ class Device:
         """Loop para verificar ACKs pendentes"""
         while self.running:
             current_time = time.time()
-            # Verifica mensagens TALK/FILE pendentes
+          
             for msg_id, (message, addr, timestamp) in list(self.pending_acks.items()):
                 if current_time - timestamp > 2.0:
                     self.socket.sendto(message.encode(), addr)
                     self.pending_acks[msg_id] = (message, addr, time.time())
-            # Verifica CHUNKs pendentes
+            
             if self.file_send_state:
                 for seq, (chunk_msg, addr, timestamp) in list(self.file_send_state['pending_chunks'].items()):
                     if current_time - timestamp > 2.0:
@@ -100,12 +96,12 @@ class Device:
         """Envia mensagem HEARTBEAT para dispositivos conhecidos"""
         message = f"HEARTBEAT {self.name}"
         try:
-            # Envia para todos os dispositivos conhecidos
+            
             for device in self.known_devices.values():
-                if device.port != self.port:  # Não envia para a própria porta
+                if device.port != self.port: 
                     self.socket.sendto(message.encode(), ('127.0.0.1', device.port))
             
-            # Envia para a porta padrão (5000) se não houver dispositivos conhecidos
+            
             if not self.known_devices and self.port != 5000:
                 self.socket.sendto(message.encode(), ('127.0.0.1', 5000))
                 
@@ -141,6 +137,7 @@ class Device:
         target = self.known_devices[target_name]
         msg_id = str(uuid.uuid4())
         filesize = os.path.getsize(filename)
+        total_chunks = (filesize + CHUNK_SIZE - 1) // CHUNK_SIZE
         file_message = f"FILE {msg_id} {os.path.basename(filename)} {filesize}"
         try:
             self.socket.sendto(file_message.encode(), ('127.0.0.1', target.port))
@@ -152,7 +149,8 @@ class Device:
                 'target': target,
                 'next_seq': 0,
                 'pending_chunks': {},
-                'acknowledged': False
+                'acknowledged': False,
+                'total_chunks': total_chunks
             }
             print(f"Solicitação de envio de arquivo enviada para {target_name}")
             return True
@@ -186,14 +184,14 @@ class Device:
             
     def _handle_heartbeat(self, device_name: str, addr: tuple):
         """Atualiza lista de dispositivos com novo HEARTBEAT"""
-        if device_name != self.name:  # Ignora próprios HEARTBEATs
+        if device_name != self.name:  
             device_info = DeviceInfo(
                 name=device_name,
                 ip=addr[0],
                 port=addr[1],
                 last_heartbeat=datetime.now()
             )
-            # Atualiza ou adiciona dispositivo
+        
             if device_name not in self.known_devices:
                 print(f"Novo dispositivo {device_name} detectado em {addr[0]}:{addr[1]}")
             self.known_devices[device_name] = device_info
@@ -203,7 +201,6 @@ class Device:
         message = ' '.join(message_parts)
         print(f"\nMensagem recebida: {message}\n")
         
-        # Envia ACK
         ack_message = f"ACK {msg_id}"
         try:
             self.socket.sendto(ack_message.encode(), addr)
@@ -215,11 +212,9 @@ class Device:
         if msg_id in self.pending_acks:
             del self.pending_acks[msg_id]
             print(f"Mensagem {msg_id} confirmada")
-            # Se for ACK do FILE, começa a enviar os CHUNKs
             if self.file_send_state and self.file_send_state['msg_id'] == msg_id and not self.file_send_state['acknowledged']:
                 self.file_send_state['acknowledged'] = True
                 threading.Thread(target=self._send_file_chunks).start()
-            # Se for ACK do END, finaliza
             if self.file_send_state and msg_id == self.file_send_state['msg_id'] + '_END':
                 print("Transferência de arquivo finalizada com sucesso!")
                 self.file_send_state = None
@@ -227,37 +222,45 @@ class Device:
     def _handle_file(self, msg_id: str, file_parts: list, addr: tuple):
         """Processa mensagem FILE recebida"""
         filename = file_parts[0]
-        filesize = file_parts[1]
+        filesize = int(file_parts[1])
+        total_chunks = (filesize + CHUNK_SIZE - 1) // CHUNK_SIZE
         print(f"\nSolicitação de recebimento de arquivo: {filename} ({filesize} bytes) de {addr[0]}:{addr[1]}")
-        # Envia ACK
         ack_message = f"ACK {msg_id}"
         try:
             self.socket.sendto(ack_message.encode(), addr)
+            self.file_recv_state[msg_id] = {
+                'filename': filename,
+                'filesize': filesize,
+                'received_chunks': {},
+                'data_chunks': {},
+                'total_chunks': total_chunks
+            }
         except Exception as e:
             print(f"Erro ao enviar ACK de FILE: {e}")
         
     def _handle_chunk(self, msg_id: str, chunk_parts: list, addr: tuple):
         seq = int(chunk_parts[0])
         b64data = chunk_parts[1]
-        data = base64.b64decode(b64data)
-        # Inicializa estado de recebimento se necessário
         if msg_id not in self.file_recv_state:
-            self.file_recv_state[msg_id] = {
-                'received_chunks': {},
-                'data_chunks': {},
-            }
+            return
         state = self.file_recv_state[msg_id]
+        total = state['total_chunks']
+        if seq >= total:
+            return  # ignora blocos extras
+        try:
+            data = base64.b64decode(b64data)
+        except Exception:
+            print(f"Erro ao processar bloco {seq} do arquivo (id {msg_id}): Incorrect padding")
+            return
         if seq not in state['received_chunks']:
             state['received_chunks'][seq] = True
             state['data_chunks'][seq] = data
-            print(f"Recebido bloco {seq} do arquivo (id {msg_id})")
-        # Envia ACK do bloco
+            print(f"Recebido bloco {seq+1}/{total} do arquivo (id {msg_id})")
         ack_message = f"ACK {msg_id}"
         try:
             self.socket.sendto(ack_message.encode(), addr)
         except Exception as e:
             print(f"Erro ao enviar ACK de CHUNK: {e}")
-        # (No futuro: salvar arquivo completo e verificar END)
         
     def list_devices(self):
         """Lista dispositivos ativos"""
@@ -266,16 +269,19 @@ class Device:
         inactive_devices = []
         
         for device in self.known_devices.values():
-            time_diff = (current_time - device.last_heartbeat).total_seconds()
-            if time_diff <= 10:  # Dispositivo ativo nos últimos 10 segundos
+            tempo = (current_time - device.last_heartbeat).total_seconds()
+            if tempo <= 10:  
                 active_devices.append(device)
             else:
                 inactive_devices.append(device.name)
                 
-        # Remove dispositivos inativos
         for device_name in inactive_devices:
             del self.known_devices[device_name]
             print(f"Dispositivo {device_name} removido por inatividade")
+                
+        for dev in active_devices:
+            tempo = (current_time - dev.last_heartbeat).total_seconds()
+            print(f"Nome: {dev.name} | IP: {dev.ip} | Porta: {dev.port} | Tempo desde o último heartbeat: {tempo:.1f}s")
                 
         return active_devices 
 
@@ -286,18 +292,19 @@ class Device:
         filename = state['filename']
         msg_id = state['msg_id']
         target = state['target']
-        chunk_size = 1024
         seq = 0
+        total = state['total_chunks']
         try:
             with open(filename, 'rb') as f:
-                while True:
-                    data = f.read(chunk_size)
+                while seq < total:
+                    data = f.read(CHUNK_SIZE)
                     if not data:
                         break
                     b64data = base64.b64encode(data).decode()
                     chunk_msg = f"CHUNK {msg_id} {seq} {b64data}"
                     self.socket.sendto(chunk_msg.encode(), ('127.0.0.1', target.port))
                     state['pending_chunks'][seq] = (chunk_msg, ('127.0.0.1', target.port), time.time())
+                    print(f"Enviando bloco {seq+1}/{total} do arquivo {os.path.basename(filename)}")
                     acked = False
                     for _ in range(20):
                         if seq not in state['pending_chunks']:
@@ -310,7 +317,6 @@ class Device:
                         state['pending_chunks'][seq] = (chunk_msg, ('127.0.0.1', target.port), time.time())
                     seq += 1
             print(f"Arquivo {filename} enviado com sucesso!")
-            # Calcula hash e envia END
             file_hash = self._calculate_file_hash(filename)
             end_msg = f"END {msg_id} {file_hash}"
             self.socket.sendto(end_msg.encode(), ('127.0.0.1', target.port))
@@ -335,19 +341,21 @@ class Device:
             print(f"Arquivo com id {msg_id} não encontrado para verificação de hash.")
             return
         state = self.file_recv_state[msg_id]
-        # Salva arquivo temporário para calcular hash
         temp_filename = f"temp_{msg_id}.bin"
         self.save_received_file(msg_id, temp_filename)
         local_hash = self._calculate_file_hash(temp_filename)
         if local_hash == received_hash:
             print(f"Arquivo recebido com sucesso e verificado! Hash: {local_hash}")
+            # Salvamento automático com nome original
+            final_filename = state['filename']
+            self.save_received_file(msg_id, final_filename)
+            print(f"Arquivo salvo automaticamente como {final_filename}")
             ack_message = f"ACK {msg_id}_END"
             self.socket.sendto(ack_message.encode(), addr)
         else:
             print(f"Arquivo corrompido! Hash esperado: {received_hash}, hash calculado: {local_hash}")
             nack_message = f"NACK {msg_id}_END hash_invalido"
             self.socket.sendto(nack_message.encode(), addr)
-        # Remove arquivo temporário
         try:
             os.remove(temp_filename)
         except Exception:
@@ -369,7 +377,6 @@ class Device:
         if not data_chunks:
             print(f"Nenhum bloco recebido para o arquivo {msg_id}.")
             return False
-        # Salva os blocos em ordem de sequência
         try:
             with open(dest_filename, 'wb') as f:
                 for seq in sorted(data_chunks.keys()):
