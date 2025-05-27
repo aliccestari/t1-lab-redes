@@ -99,11 +99,11 @@ class Device:
             
             for device in self.known_devices.values():
                 if device.port != self.port: 
-                    self.socket.sendto(message.encode(), ('127.0.0.1', device.port))
+                    self.socket.sendto(message.encode(), ("127.0.0.1", device.port))
             
             
             if not self.known_devices and self.port != 5000:
-                self.socket.sendto(message.encode(), ('127.0.0.1', 5000))
+                self.socket.sendto(message.encode(), ("127.0.0.1", 5000))
                 
         except Exception as e:
             print(f"Erro ao enviar HEARTBEAT: {e}")
@@ -119,8 +119,8 @@ class Device:
         talk_message = f"TALK {msg_id} {message}"
         
         try:
-            self.socket.sendto(talk_message.encode(), ('127.0.0.1', target.port))
-            self.pending_acks[msg_id] = (talk_message, ('127.0.0.1', target.port), time.time())
+            self.socket.sendto(talk_message.encode(), ("127.0.0.1", target.port))
+            self.pending_acks[msg_id] = (talk_message, ("127.0.0.1", target.port), time.time())
             return True
         except Exception as e:
             print(f"Erro ao enviar mensagem: {e}")
@@ -140,8 +140,8 @@ class Device:
         total_chunks = (filesize + CHUNK_SIZE - 1) // CHUNK_SIZE
         file_message = f"FILE {msg_id} {os.path.basename(filename)} {filesize}"
         try:
-            self.socket.sendto(file_message.encode(), ('127.0.0.1', target.port))
-            self.pending_acks[msg_id] = (file_message, ('127.0.0.1', target.port), time.time())
+            self.socket.sendto(file_message.encode(), ("127.0.0.1", target.port))
+            self.pending_acks[msg_id] = (file_message, ("127.0.0.1", target.port), time.time())
             self.file_send_state = {
                 'msg_id': msg_id,
                 'filename': filename,
@@ -302,8 +302,8 @@ class Device:
                         break
                     b64data = base64.b64encode(data).decode()
                     chunk_msg = f"CHUNK {msg_id} {seq} {b64data}"
-                    self.socket.sendto(chunk_msg.encode(), ('127.0.0.1', target.port))
-                    state['pending_chunks'][seq] = (chunk_msg, ('127.0.0.1', target.port), time.time())
+                    self.socket.sendto(chunk_msg.encode(), ("127.0.0.1", target.port))
+                    state['pending_chunks'][seq] = (chunk_msg, ("127.0.0.1", target.port), time.time())
                     print(f"Enviando bloco {seq+1}/{total} do arquivo {os.path.basename(filename)}")
                     acked = False
                     for _ in range(20):
@@ -313,14 +313,14 @@ class Device:
                         time.sleep(0.1)
                     if not acked:
                         print(f"Timeout esperando ACK do bloco {seq}, retransmitindo...")
-                        self.socket.sendto(chunk_msg.encode(), ('127.0.0.1', target.port))
-                        state['pending_chunks'][seq] = (chunk_msg, ('127.0.0.1', target.port), time.time())
+                        self.socket.sendto(chunk_msg.encode(), ("127.0.0.1", target.port))
+                        state['pending_chunks'][seq] = (chunk_msg, ("127.0.0.1", target.port), time.time())
                     seq += 1
             print(f"Arquivo {filename} enviado com sucesso!")
             file_hash = self._calculate_file_hash(filename)
             end_msg = f"END {msg_id} {file_hash}"
-            self.socket.sendto(end_msg.encode(), ('127.0.0.1', target.port))
-            self.pending_acks[msg_id + '_END'] = (end_msg, ('127.0.0.1', target.port), time.time())
+            self.socket.sendto(end_msg.encode(), ("127.0.0.1", target.port))
+            self.pending_acks[msg_id + '_END'] = (end_msg, ("127.0.0.1", target.port), time.time())
         except Exception as e:
             print(f"Erro ao enviar arquivo: {e}")
 
